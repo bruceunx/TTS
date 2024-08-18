@@ -218,9 +218,12 @@ class Xtts(BaseTTS):
     def init_models(self):
         """Initialize the models. We do it here since we need to load the tokenizer first."""
         if self.tokenizer.tokenizer is not None:
-            self.args.gpt_number_text_tokens = self.tokenizer.get_number_tokens()
-            self.args.gpt_start_text_token = self.tokenizer.tokenizer.token_to_id("[START]")
-            self.args.gpt_stop_text_token = self.tokenizer.tokenizer.token_to_id("[STOP]")
+            self.args.gpt_number_text_tokens = self.tokenizer.get_number_tokens(
+            )
+            self.args.gpt_start_text_token = self.tokenizer.tokenizer.token_to_id(
+                "[START]")
+            self.args.gpt_stop_text_token = self.tokenizer.tokenizer.token_to_id(
+                "[STOP]")
 
         if self.args.gpt_number_text_tokens:
             self.gpt = GPT(
@@ -247,7 +250,8 @@ class Xtts(BaseTTS):
             ar_mel_length_compression=self.args.gpt_code_stride_len,
             decoder_input_dim=self.args.decoder_input_dim,
             d_vector_dim=self.args.d_vector_dim,
-            cond_d_vector_in_each_upsampling_layer=self.args.cond_d_vector_in_each_upsampling_layer,
+            cond_d_vector_in_each_upsampling_layer=self.args.
+            cond_d_vector_in_each_upsampling_layer,
         )
 
     @property
@@ -255,7 +259,11 @@ class Xtts(BaseTTS):
         return next(self.parameters()).device
 
     @torch.inference_mode()
-    def get_gpt_cond_latents(self, audio, sr, length: int = 30, chunk_length: int = 6):
+    def get_gpt_cond_latents(self,
+                             audio,
+                             sr,
+                             length: int = 30,
+                             chunk_length: int = 6):
         """Compute the conditioning latents for the GPT model from the given audio.
 
         Args:
@@ -268,13 +276,13 @@ class Xtts(BaseTTS):
         if sr != 22050:
             audio = torchaudio.functional.resample(audio, sr, 22050)
         if length > 0:
-            audio = audio[:, : 22050 * length]
+            audio = audio[:, :22050 * length]
         if self.args.gpt_use_perceiver_resampler:
             style_embs = []
             for i in range(0, audio.shape[1], 22050 * chunk_length):
-                audio_chunk = audio[:, i : i + 22050 * chunk_length]
+                audio_chunk = audio[:, i:i + 22050 * chunk_length]
 
-                # if the chunk is too short ignore it 
+                # if the chunk is too short ignore it
                 if audio_chunk.size(-1) < 22050 * 0.33:
                     continue
 
@@ -291,7 +299,8 @@ class Xtts(BaseTTS):
                     f_max=8000,
                     n_mels=80,
                 )
-                style_emb = self.gpt.get_style_emb(mel_chunk.to(self.device), None)
+                style_emb = self.gpt.get_style_emb(mel_chunk.to(self.device),
+                                                   None)
                 style_embs.append(style_emb)
 
             # mean style embedding
@@ -316,11 +325,9 @@ class Xtts(BaseTTS):
     @torch.inference_mode()
     def get_speaker_embedding(self, audio, sr):
         audio_16k = torchaudio.functional.resample(audio, sr, 16000)
-        return (
-            self.hifigan_decoder.speaker_encoder.forward(audio_16k.to(self.device), l2_norm=True)
-            .unsqueeze(-1)
-            .to(self.device)
-        )
+        return (self.hifigan_decoder.speaker_encoder.forward(
+            audio_16k.to(self.device),
+            l2_norm=True).unsqueeze(-1).to(self.device))
 
     @torch.inference_mode()
     def get_conditioning_latents(
@@ -355,7 +362,7 @@ class Xtts(BaseTTS):
         speaker_embedding = None
         for file_path in audio_paths:
             audio = load_audio(file_path, load_sr)
-            audio = audio[:, : load_sr * max_ref_length].to(self.device)
+            audio = audio[:, :load_sr * max_ref_length].to(self.device)
             if sound_norm_refs:
                 audio = (audio / torch.abs(audio).max()) * 0.75
             if librosa_trim_db is not None:
@@ -370,8 +377,10 @@ class Xtts(BaseTTS):
         # merge all the audios and compute the latents for the gpt
         full_audio = torch.cat(audios, dim=-1)
         gpt_cond_latents = self.get_gpt_cond_latents(
-            full_audio, load_sr, length=gpt_cond_len, chunk_length=gpt_cond_chunk_len
-        )  # [1, 1024, T]
+            full_audio,
+            load_sr,
+            length=gpt_cond_len,
+            chunk_length=gpt_cond_chunk_len)  # [1, 1024, T]
 
         if speaker_embeddings:
             speaker_embedding = torch.stack(speaker_embeddings)
@@ -379,7 +388,13 @@ class Xtts(BaseTTS):
 
         return gpt_cond_latents, speaker_embedding
 
-    def synthesize(self, text, config, speaker_wav, language, speaker_id=None, **kwargs):
+    def synthesize(self,
+                   text,
+                   config,
+                   speaker_wav,
+                   language,
+                   speaker_id=None,
+                   **kwargs):
         """Synthesize speech with the given input text.
 
         Args:
@@ -406,10 +421,13 @@ class Xtts(BaseTTS):
             "top_k": config.top_k,
             "top_p": config.top_p,
         }
-        settings.update(kwargs)  # allow overriding of preset settings with kwargs
+        settings.update(
+            kwargs)  # allow overriding of preset settings with kwargs
         if speaker_id is not None:
-            gpt_cond_latent, speaker_embedding = self.speaker_manager.speakers[speaker_id].values()
-            return self.inference(text, language, gpt_cond_latent, speaker_embedding, **settings)
+            gpt_cond_latent, speaker_embedding = self.speaker_manager.speakers[
+                speaker_id].values()
+            return self.inference(text, language, gpt_cond_latent,
+                                  speaker_embedding, **settings)
         settings.update({
             "gpt_cond_len": config.gpt_cond_len,
             "gpt_cond_chunk_len": config.gpt_cond_chunk_len,
@@ -523,7 +541,8 @@ class Xtts(BaseTTS):
         gpt_cond_latent = gpt_cond_latent.to(self.device)
         speaker_embedding = speaker_embedding.to(self.device)
         if enable_text_splitting:
-            text = split_sentence(text, language, self.tokenizer.char_limits[language])
+            text = split_sentence(text, language,
+                                  self.tokenizer.char_limits[language])
         else:
             text = [text]
 
@@ -531,7 +550,9 @@ class Xtts(BaseTTS):
         gpt_latents_list = []
         for sent in text:
             sent = sent.strip().lower()
-            text_tokens = torch.IntTensor(self.tokenizer.encode(sent, lang=language)).unsqueeze(0).to(self.device)
+            text_tokens = torch.IntTensor(
+                self.tokenizer.encode(sent, lang=language)).unsqueeze(0).to(
+                    self.device)
 
             assert (
                 text_tokens.shape[-1] < self.args.gpt_max_text_tokens
@@ -554,10 +575,11 @@ class Xtts(BaseTTS):
                     **hf_generate_kwargs,
                 )
                 expected_output_len = torch.tensor(
-                    [gpt_codes.shape[-1] * self.gpt.code_stride_len], device=text_tokens.device
-                )
+                    [gpt_codes.shape[-1] * self.gpt.code_stride_len],
+                    device=text_tokens.device)
 
-                text_len = torch.tensor([text_tokens.shape[-1]], device=self.device)
+                text_len = torch.tensor([text_tokens.shape[-1]],
+                                        device=self.device)
                 gpt_latents = self.gpt(
                     text_tokens,
                     text_len,
@@ -569,12 +591,14 @@ class Xtts(BaseTTS):
                 )
 
                 if length_scale != 1.0:
-                    gpt_latents = F.interpolate(
-                        gpt_latents.transpose(1, 2), scale_factor=length_scale, mode="linear"
-                    ).transpose(1, 2)
+                    gpt_latents = F.interpolate(gpt_latents.transpose(1, 2),
+                                                scale_factor=length_scale,
+                                                mode="linear").transpose(1, 2)
 
                 gpt_latents_list.append(gpt_latents.cpu())
-                wavs.append(self.hifigan_decoder(gpt_latents, g=speaker_embedding).cpu().squeeze())
+                wavs.append(
+                    self.hifigan_decoder(gpt_latents,
+                                         g=speaker_embedding).cpu().squeeze())
 
         return {
             "wav": torch.cat(wavs, dim=0).numpy(),
@@ -586,21 +610,24 @@ class Xtts(BaseTTS):
         """Handle chunk formatting in streaming mode"""
         wav_chunk = wav_gen[:-overlap_len]
         if wav_gen_prev is not None:
-            wav_chunk = wav_gen[(wav_gen_prev.shape[0] - overlap_len) : -overlap_len]
+            wav_chunk = wav_gen[(wav_gen_prev.shape[0] -
+                                 overlap_len):-overlap_len]
         if wav_overlap is not None:
             # cross fade the overlap section
             if overlap_len > len(wav_chunk):
                 # wav_chunk is smaller than overlap_len, pass on last wav_gen
                 if wav_gen_prev is not None:
-                    wav_chunk = wav_gen[(wav_gen_prev.shape[0] - overlap_len) :]
+                    wav_chunk = wav_gen[(wav_gen_prev.shape[0] - overlap_len):]
                 else:
                     # not expecting will hit here as problem happens on last chunk
                     wav_chunk = wav_gen[-overlap_len:]
                 return wav_chunk, wav_gen, None
             else:
                 crossfade_wav = wav_chunk[:overlap_len]
-                crossfade_wav = crossfade_wav * torch.linspace(0.0, 1.0, overlap_len).to(crossfade_wav.device)
-                wav_chunk[:overlap_len] = wav_overlap * torch.linspace(1.0, 0.0, overlap_len).to(wav_overlap.device)
+                crossfade_wav = crossfade_wav * torch.linspace(
+                    0.0, 1.0, overlap_len).to(crossfade_wav.device)
+                wav_chunk[:overlap_len] = wav_overlap * torch.linspace(
+                    1.0, 0.0, overlap_len).to(wav_overlap.device)
                 wav_chunk[:overlap_len] += crossfade_wav
 
         wav_overlap = wav_gen[-overlap_len:]
@@ -633,13 +660,16 @@ class Xtts(BaseTTS):
         gpt_cond_latent = gpt_cond_latent.to(self.device)
         speaker_embedding = speaker_embedding.to(self.device)
         if enable_text_splitting:
-            text = split_sentence(text, language, self.tokenizer.char_limits[language])
+            text = split_sentence(text, language,
+                                  self.tokenizer.char_limits[language])
         else:
             text = [text]
 
         for sent in text:
             sent = sent.strip().lower()
-            text_tokens = torch.IntTensor(self.tokenizer.encode(sent, lang=language)).unsqueeze(0).to(self.device)
+            text_tokens = torch.IntTensor(
+                self.tokenizer.encode(sent, lang=language)).unsqueeze(0).to(
+                    self.device)
 
             assert (
                 text_tokens.shape[-1] < self.args.gpt_max_text_tokens
@@ -678,16 +708,20 @@ class Xtts(BaseTTS):
                 except StopIteration:
                     is_end = True
 
-                if is_end or (stream_chunk_size > 0 and len(last_tokens) >= stream_chunk_size):
+                if is_end or (stream_chunk_size > 0
+                              and len(last_tokens) >= stream_chunk_size):
                     gpt_latents = torch.cat(all_latents, dim=0)[None, :]
                     if length_scale != 1.0:
                         gpt_latents = F.interpolate(
-                            gpt_latents.transpose(1, 2), scale_factor=length_scale, mode="linear"
-                        ).transpose(1, 2)
-                    wav_gen = self.hifigan_decoder(gpt_latents, g=speaker_embedding.to(self.device))
+                            gpt_latents.transpose(1, 2),
+                            scale_factor=length_scale,
+                            mode="linear").transpose(1, 2)
+                    wav_gen = self.hifigan_decoder(gpt_latents,
+                                                   g=speaker_embedding.to(
+                                                       self.device))
                     wav_chunk, wav_gen_prev, wav_overlap = self.handle_chunks(
-                        wav_gen.squeeze(), wav_gen_prev, wav_overlap, overlap_wav_len
-                    )
+                        wav_gen.squeeze(), wav_gen_prev, wav_overlap,
+                        overlap_wav_len)
                     last_tokens = []
                     yield wav_chunk
 
@@ -711,9 +745,13 @@ class Xtts(BaseTTS):
         super().eval()
 
     def get_compatible_checkpoint_state_dict(self, model_path):
-        checkpoint = load_fsspec(model_path, map_location=torch.device("cpu"))["model"]
+        checkpoint = load_fsspec(model_path,
+                                 map_location=torch.device("cpu"))["model"]
         # remove xtts gpt trainer extra keys
-        ignore_keys = ["torch_mel_spectrogram_style_encoder", "torch_mel_spectrogram_dvae", "dvae"]
+        ignore_keys = [
+            "torch_mel_spectrogram_style_encoder",
+            "torch_mel_spectrogram_dvae", "dvae"
+        ]
         for key in list(checkpoint.keys()):
             # check if it is from the coqui Trainer if so convert it
             if key.startswith("xtts."):
@@ -754,11 +792,13 @@ class Xtts(BaseTTS):
             None
         """
 
-        model_path = checkpoint_path or os.path.join(checkpoint_dir, "model.pth")
+        model_path = checkpoint_path or os.path.join(checkpoint_dir,
+                                                     "model.pth")
         vocab_path = vocab_path or os.path.join(checkpoint_dir, "vocab.json")
 
         if speaker_file_path is None and checkpoint_dir is not None:
-            speaker_file_path = os.path.join(checkpoint_dir, "speakers_xtts.pth")
+            speaker_file_path = os.path.join(checkpoint_dir,
+                                             "speakers_xtts.pth")
 
         self.language_manager = LanguageManager(config)
         self.speaker_manager = None
@@ -782,7 +822,8 @@ class Xtts(BaseTTS):
 
         if eval:
             self.hifigan_decoder.eval()
-            self.gpt.init_gpt_for_inference(kv_cache=self.args.kv_cache, use_deepspeed=use_deepspeed)
+            self.gpt.init_gpt_for_inference(kv_cache=self.args.kv_cache,
+                                            use_deepspeed=use_deepspeed)
             self.gpt.eval()
 
     def train_step(self):
