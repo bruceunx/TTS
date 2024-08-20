@@ -1,12 +1,10 @@
 from io import BytesIO
-import os
 import re
 import time
 import json
-import yaml
-import fsspec
 import importlib
 
+from TTS.tts.models.xtts import Xtts
 import scipy
 import numpy as np
 
@@ -82,114 +80,29 @@ def find_module(module_path: str, module_name: str):
 
 
 def setup_model(config, samples=None):
-    print(" > Using model: {}".format(config.model))
     MyModel = find_module("TTS.tts.models", config.model.lower())
     model = MyModel.init_from_config(config=config, samples=samples)
     return model
 
 
-def read_json_with_comments(json_path):
-    """for backward compat."""
-    # fallback to json
-    with fsspec.open(json_path, "r", encoding="utf-8") as f:
-        input_str = f.read()
-    # handle comments but not urls with //
-    input_str = re.sub(
-        r"(\"(?:[^\"\\]|\\.)*\")|(/\*(?:.|[\\n\\r])*?\*/)|(//.*)",
-        lambda m: m.group(1) or m.group(2) or "", input_str)
-    return json.loads(input_str)
-
-
 def load_config(config_path: str):
-    """Import `json` or `yaml` files as TTS configs. First, load the input file as a `dict` and check the model name
-    to find the corresponding Config class. Then initialize the Config.
 
-    Args:
-        config_path (str): path to the config file.
-
-    Raises:
-        TypeError: given config file has an unknown type.
-
-    Returns:
-        Coqpit: TTS config object.
-    """
+    from TTS.tts.configs.xtts_config import XttsConfig
     config_dict = {}
-    ext = os.path.splitext(config_path)[1]
-    if ext in (".yml", ".yaml"):
-        with fsspec.open(config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    elif ext == ".json":
-        try:
-            with fsspec.open(config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except json.decoder.JSONDecodeError:
-            # backwards compat.
-            data = read_json_with_comments(config_path)
-    else:
-        raise TypeError(f" [!] Unknown config file type {ext}")
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
     config_dict.update(data)
-    model_name = _process_model_name(config_dict)
-    config_class = register_config(model_name.lower())
-    config = config_class()
+    # model_name = config_dict["model"]
+    config = XttsConfig()
     config.from_dict(config_dict)
     return config
-
-
-def _process_model_name(config_dict: dict) -> str:
-    """Format the model name as expected. It is a band-aid for the old `vocoder` model names.
-
-    Args:
-        config_dict (Dict): A dictionary including the config fields.
-
-    Returns:
-        str: Formatted modelname.
-    """
-    model_name = config_dict[
-        "model"] if "model" in config_dict else config_dict["generator_model"]
-    model_name = model_name.replace("_generator",
-                                    "").replace("_discriminator", "")
-    return model_name
-
-
-def register_config(model_name: str):
-    """Find the right config for the given model name.
-
-    Args:
-        model_name (str): Model name.
-
-    Raises:
-        ModuleNotFoundError: No matching config for the model name.
-
-    Returns:
-        Coqpit: config class.
-    """
-    config_class = None
-    config_name = model_name + "_config"
-
-    if model_name == "xtts":
-        from TTS.tts.configs.xtts_config import XttsConfig
-
-        config_class = XttsConfig
-    paths = [
-        "TTS.tts.configs", "TTS.vocoder.configs", "TTS.encoder.configs",
-        "TTS.vc.configs"
-    ]
-    for path in paths:
-        try:
-            config_class = find_module(path, config_name)
-        except ModuleNotFoundError:
-            pass
-    if config_class is None:
-        raise ModuleNotFoundError(
-            f" [!] Config for {model_name} cannot be found.")
-    return config_class
 
 
 class Synthesizer(nn.Module):
 
     def __init__(self, tts_checkpoint="", tts_config_path="", use_cuda=False):
         super().__init__()
-        self.tts_checkpoint = tts_checkpoint
+        self.tts_checkpoint_dir = tts_checkpoint
         self.tts_config_path = tts_config_path
 
         self.use_cuda = use_cuda
@@ -213,16 +126,12 @@ class Synthesizer(nn.Module):
             self._load_tts(tts_checkpoint, tts_config_path, use_cuda)
             self.output_sample_rate = self.tts_config.audio["sample_rate"]
 
-    def _load_tts(self, tts_checkpoint: str, tts_config_path: str,
+    def _load_tts(self, tts_checkpoint_dir: str, tts_config_path: str,
                   use_cuda: bool) -> None:
 
         self.tts_config = load_config(tts_config_path)
-
-        self.tts_model = setup_model(config=self.tts_config)
-
-        self.tts_model.load_checkpoint(self.tts_config,
-                                       tts_checkpoint,
-                                       eval=True)
+        self.tts_model = XTTs(self.tts_config)
+        self.tts_model.load_checkpoint(tts_checkpoint_dir, eval=True)
         if use_cuda:
             self.tts_model.cuda()
 
@@ -486,3 +395,25 @@ class TTS(nn.Module):
             return
         self.synthesizer.save_wav(wav=wav, path=file_path)
         return file_path
+
+
+if __name__ == "__main__":
+
+    #     import torch
+    #     from TTS.api import TTS
+    #
+    #     tts = TTS(model_path=".", config_path="./config.json", progress_bar=True)
+    # # tts.to(torch.device("cuda"))
+    #
+    # # Read text from file
+    #     with open("./book.txt", "r", encoding="utf-8") as f:
+    #         text = f.read()
+    #
+    # # Download model.pth, config.json, vocab.json from huggingface model hub
+    #
+    #     tts.tts_to_file(text=text,
+    #                     file_path="./caravan2.wav",
+    #                     speaker_wav="./shelly.wav",
+    #                     enable_text_splitting=True,
+    #                     language="en")
+    pass

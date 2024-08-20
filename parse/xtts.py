@@ -9,6 +9,7 @@ import os
 from functools import cached_property
 import re
 from packaging import version
+from dataclasses import dataclass, field, fields
 
 import torch
 import torchaudio
@@ -29,9 +30,96 @@ from transformers import GPT2Config, GPT2Model
 from transformers import GPT2PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
-import fsspec
+from spacy.lang.en import English
+import textwrap
+
+# import fsspec
 
 LRELU_SLOPE = 0.1
+
+
+def split_sentence(text, lang, text_split_length=250):
+    """Preprocess the input text"""
+    text_splits = []
+    if text_split_length is not None and len(text) >= text_split_length:
+        text_splits.append("")
+        nlp = English()
+        nlp.add_pipe("sentencizer")
+        doc = nlp(text)
+        for sentence in doc.sents:
+            if len(text_splits[-1]) + len(str(sentence)) <= text_split_length:
+                # if the last sentence + the current sentence is less than the text_split_length
+                # then add the current sentence to the last sentence
+                text_splits[-1] += " " + str(sentence)
+                text_splits[-1] = text_splits[-1].lstrip()
+            elif len(str(sentence)) > text_split_length:
+                # if the current sentence is greater than the text_split_length
+                for line in textwrap.wrap(
+                        str(sentence),
+                        width=text_split_length,
+                        drop_whitespace=True,
+                        break_on_hyphens=False,
+                        tabsize=1,
+                ):
+                    text_splits.append(str(line))
+            else:
+                text_splits.append(str(sentence))
+
+        if len(text_splits) > 1:
+            if text_splits[0] == "":
+                del text_splits[0]
+    else:
+        text_splits = [text.lstrip()]
+
+    return text_splits
+
+
+def wav_to_mel_cloning(
+    wav,
+    mel_norms_file="../experiments/clips_mel_norms.pth",
+    mel_norms=None,
+    device=torch.device("cpu"),
+    n_fft=4096,
+    hop_length=1024,
+    win_length=4096,
+    power=2,
+    normalized=False,
+    sample_rate=22050,
+    f_min=0,
+    f_max=8000,
+    n_mels=80,
+):
+    """
+    Convert waveform to mel-spectrogram with hard-coded parameters for cloning.
+
+    Args:
+        wav (torch.Tensor): Input waveform tensor.
+        mel_norms_file (str): Path to mel-spectrogram normalization file.
+        mel_norms (torch.Tensor): Mel-spectrogram normalization tensor.
+        device (torch.device): Device to use for computation.
+
+    Returns:
+        torch.Tensor: Mel-spectrogram tensor.
+    """
+    mel_stft = torchaudio.transforms.MelSpectrogram(
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        power=power,
+        normalized=normalized,
+        sample_rate=sample_rate,
+        f_min=f_min,
+        f_max=f_max,
+        n_mels=n_mels,
+        norm="slaney",
+    ).to(device)
+    wav = wav.to(device)
+    mel = mel_stft(wav)
+    mel = torch.log(torch.clamp(mel, min=1e-5))
+    if mel_norms is None:
+        mel_norms = torch.load(mel_norms_file, map_location=device)
+    mel = mel / mel_norms.unsqueeze(0).unsqueeze(-1)
+    return mel
 
 
 def get_user_data_dir(appname):
@@ -74,19 +162,8 @@ def load_fsspec(
     Returns:
         Object stored in path.
     """
-    is_local = os.path.isdir(path) or os.path.isfile(path)
-    if cache and not is_local:
-        with fsspec.open(
-                f"filecache::{path}",
-                filecache={
-                    "cache_storage": str(get_user_data_dir("tts_cache"))
-                },
-                mode="rb",
-        ) as f:
-            return torch.load(f, map_location=map_location, **kwargs)
-    else:
-        with fsspec.open(path, "rb") as f:
-            return torch.load(f, map_location=map_location, **kwargs)
+    with open(path, "rb") as f:
+        return torch.load(f, map_location=map_location, **kwargs)
 
 
 def get_padding(k, d):
@@ -2182,40 +2259,6 @@ class BaseTTS(nn.Module):
         else:
             raise ValueError("config must be either a *Config or *Args")
 
-    def init_multispeaker(self, config, data=None):
-        """Initialize a speaker embedding layer if needen and define expected embedding channel size for defining
-        `in_channels` size of the connected layers.
-
-        This implementation yields 3 possible outcomes:
-
-        1. If `config.use_speaker_embedding` and `config.use_d_vector_file are False, do nothing.
-        2. If `config.use_d_vector_file` is True, set expected embedding channel size to `config.d_vector_dim` or 512.
-        3. If `config.use_speaker_embedding`, initialize a speaker embedding layer with channel size of
-        `config.d_vector_dim` or 512.
-
-        You can override this function for new models.
-
-        Args:
-            config (Coqpit): Model configuration.
-        """
-        # set number of speakers
-        if self.speaker_manager is not None:
-            self.num_speakers = self.speaker_manager.num_speakers
-        elif hasattr(config, "num_speakers"):
-            self.num_speakers = config.num_speakers
-
-        # set ultimate speaker embedding size
-        if config.use_speaker_embedding or config.use_d_vector_file:
-            self.embedded_speaker_dim = (
-                config.d_vector_dim if "d_vector_dim" in config
-                and config.d_vector_dim is not None else 512)
-        # init speaker embedding layer
-        if config.use_speaker_embedding and not config.use_d_vector_file:
-            print(" > Init speaker_embedding layer.")
-            self.speaker_embedding = nn.Embedding(self.num_speakers,
-                                                  self.embedded_speaker_dim)
-            self.speaker_embedding.weight.data.normal_(0, 0.3)
-
     def get_aux_input(self, **kwargs):
         """Prepare and return `aux_input` used by `forward()`"""
         return {
@@ -2775,14 +2818,11 @@ class Xtts(BaseTTS):
         super().__init__(config, ap=None, tokenizer=None)
         self.mel_stats_path = None
         self.config = config
-        self.gpt_checkpoint = self.args.gpt_checkpoint
-        self.decoder_checkpoint = self.args.decoder_checkpoint  # TODO: check if this is even needed
-        self.models_dir = config.model_dir
-        self.gpt_batch_size = self.args.gpt_batch_size
+        self.gpt_batch_size = self.args.gpt_batch_size  # 1
 
-        self.tokenizer = VoiceBpeTokenizer()
-        self.gpt = None
-        self.init_models()
+        # self.tokenizer = VoiceBpeTokenizer()
+        # self.gpt = None
+        # self.init_models()
         self.register_buffer("mel_stats", torch.ones(80))
 
     def init_models(self):
@@ -3305,19 +3345,17 @@ class Xtts(BaseTTS):
             "XTTS has a dedicated trainer, please check the XTTS docs: https://tts.readthedocs.io/en/dev/models/xtts.html#training"
         )
 
-    @staticmethod
-    def init_from_config(config: "XttsConfig", **kwargs):  # pylint: disable=unused-argument
-        return Xtts(config)
-
     def eval(self):  # pylint: disable=redefined-builtin
         """Sets the model to evaluation mode. Overrides the default eval() method to also set the GPT model to eval mode."""
         self.gpt.init_gpt_for_inference()
         super().eval()
 
     def get_compatible_checkpoint_state_dict(self, model_path):
-        checkpoint = load_fsspec(model_path,
-                                 map_location=torch.device("cpu"))["model"]
-        # remove xtts gpt trainer extra keys
+
+        with open(model_path, "rb") as f:
+            checkpoint = torch.load(f,
+                                    map_location=torch.device("cpu"))["model"]
+
         ignore_keys = [
             "torch_mel_spectrogram_style_encoder",
             "torch_mel_spectrogram_dvae", "dvae"
@@ -3338,10 +3376,7 @@ class Xtts(BaseTTS):
 
     def load_checkpoint(
         self,
-        config,
-        checkpoint_dir=None,
-        checkpoint_path=None,
-        vocab_path=None,
+        checkpoint_dir,
         eval=True,
         strict=True,
         use_deepspeed=False,
@@ -3362,18 +3397,8 @@ class Xtts(BaseTTS):
             None
         """
 
-        model_path = checkpoint_path or os.path.join(checkpoint_dir,
-                                                     "model.pth")
-        vocab_path = vocab_path or os.path.join(checkpoint_dir, "vocab.json")
-
-        if speaker_file_path is None and checkpoint_dir is not None:
-            speaker_file_path = os.path.join(checkpoint_dir,
-                                             "speakers_xtts.pth")
-
-        self.language_manager = LanguageManager(config)
-        self.speaker_manager = None
-        if speaker_file_path is not None and os.path.exists(speaker_file_path):
-            self.speaker_manager = SpeakerManager(speaker_file_path)
+        model_path = os.path.join(checkpoint_dir, "model.pth")
+        vocab_path = os.path.join(checkpoint_dir, "vocab.json")
 
         if os.path.exists(vocab_path):
             self.tokenizer = VoiceBpeTokenizer(vocab_file=vocab_path)
@@ -3382,16 +3407,203 @@ class Xtts(BaseTTS):
 
         checkpoint = self.get_compatible_checkpoint_state_dict(model_path)
 
-        # deal with v1 and v1.1. V1 has the init_gpt_for_inference keys, v1.1 do not
-        try:
-            self.load_state_dict(checkpoint, strict=strict)
-        except:
-            if eval:
-                self.gpt.init_gpt_for_inference(kv_cache=self.args.kv_cache)
-            self.load_state_dict(checkpoint, strict=strict)
+        self.load_state_dict(checkpoint, strict=strict)
 
         if eval:
             self.hifigan_decoder.eval()
-            self.gpt.init_gpt_for_inference(kv_cache=self.args.kv_cache,
-                                            use_deepspeed=use_deepspeed)
+            self.gpt.init_gpt_for_inference(
+                kv_cache=self.args.kv_cache,  # kv_cacke = True
+                use_deepspeed=use_deepspeed)
             self.gpt.eval()
+
+
+@dataclass
+class BaseConfig:
+
+    def from_dict(self, data):
+        if not isinstance(data, dict):
+            raise ValueError()
+        data = data.copy()
+        init_kwargs = {}
+        for _field in fields(self):
+            # if field.name == 'dataset_config':
+            if _field.name not in data:
+                if _field.name in vars(self):
+                    init_kwargs[field.name] = vars(self)[_field.name]
+                    continue
+                raise ValueError(f' [!] Missing required field "{field.name}"')
+            #TODO handle default value
+            # value = data.get(field.name, _default_value(field))
+            value = data.get(field.name, None)
+            if value is None:
+                init_kwargs[field.name] = value
+                continue
+            #TODO handle _deserialize
+            # value = _deserialize(value, _field.type)
+            init_kwargs[field.name] = value
+        for k, v in init_kwargs.items():
+            setattr(self, k, v)
+        return self
+
+
+@dataclass
+class XttsArgs(BaseConfig):
+    """A dataclass to represent XTTS model arguments that define the model structure.
+
+    Args:
+        gpt_batch_size (int): The size of the auto-regressive batch.
+        enable_redaction (bool, optional): Whether to enable redaction. Defaults to True.
+        kv_cache (bool, optional): Whether to use the kv_cache. Defaults to True.
+        gpt_checkpoint (str, optional): The checkpoint for the autoregressive model. Defaults to None.
+        clvp_checkpoint (str, optional): The checkpoint for the ConditionalLatentVariablePerseq model. Defaults to None.
+        decoder_checkpoint (str, optional): The checkpoint for the DiffTTS model. Defaults to None.
+        num_chars (int, optional): The maximum number of characters to generate. Defaults to 255.
+
+        For GPT model:
+        gpt_max_audio_tokens (int, optional): The maximum mel tokens for the autoregressive model. Defaults to 604.
+        gpt_max_text_tokens (int, optional): The maximum text tokens for the autoregressive model. Defaults to 402.
+        gpt_max_prompt_tokens (int, optional): The maximum prompt tokens or the autoregressive model. Defaults to 70.
+        gpt_layers (int, optional): The number of layers for the autoregressive model. Defaults to 30.
+        gpt_n_model_channels (int, optional): The model dimension for the autoregressive model. Defaults to 1024.
+        gpt_n_heads (int, optional): The number of heads for the autoregressive model. Defaults to 16.
+        gpt_number_text_tokens (int, optional): The number of text tokens for the autoregressive model. Defaults to 255.
+        gpt_start_text_token (int, optional): The start text token for the autoregressive model. Defaults to 255.
+        gpt_checkpointing (bool, optional): Whether to use checkpointing for the autoregressive model. Defaults to False.
+        gpt_train_solo_embeddings (bool, optional): Whether to train embeddings for the autoregressive model. Defaults to False.
+        gpt_code_stride_len (int, optional): The hop_size of dvae and consequently of the gpt output. Defaults to 1024.
+        gpt_use_masking_gt_prompt_approach (bool, optional):  If True, it will use ground truth as prompt and it will mask the loss to avoid repetition. Defaults to True.
+        gpt_use_perceiver_resampler (bool, optional):  If True, it will use perceiver resampler from flamingo paper - https://arxiv.org/abs/2204.14198. Defaults to False.
+    """
+
+    gpt_batch_size: int = 1
+    enable_redaction: bool = False
+    kv_cache: bool = True
+    gpt_checkpoint: str = None
+    clvp_checkpoint: str = None
+    decoder_checkpoint: str = None
+    num_chars: int = 255
+
+    # XTTS GPT Encoder params
+    tokenizer_file: str = ""
+    gpt_max_audio_tokens: int = 605
+    gpt_max_text_tokens: int = 402
+    gpt_max_prompt_tokens: int = 70
+    gpt_layers: int = 30
+    gpt_n_model_channels: int = 1024
+    gpt_n_heads: int = 16
+    gpt_number_text_tokens: int = None
+    gpt_start_text_token: int = None
+    gpt_stop_text_token: int = None
+    gpt_num_audio_tokens: int = 8194
+    gpt_start_audio_token: int = 8192
+    gpt_stop_audio_token: int = 8193
+    gpt_code_stride_len: int = 1024
+    gpt_use_masking_gt_prompt_approach: bool = True
+    gpt_use_perceiver_resampler: bool = False
+
+    # HifiGAN Decoder params
+    input_sample_rate: int = 22050
+    output_sample_rate: int = 24000
+    output_hop_length: int = 256
+    decoder_input_dim: int = 1024
+    d_vector_dim: int = 512
+    cond_d_vector_in_each_upsampling_layer: bool = True
+
+    # constants
+    duration_const: int = 102400
+
+
+@dataclass
+class XttsAudioConfig(BaseConfig):
+    """
+    Configuration class for audio-related parameters in the XTTS model.
+
+    Args:
+        sample_rate (int): The sample rate in which the GPT operates.
+        output_sample_rate (int): The sample rate of the output audio waveform.
+    """
+
+    sample_rate: int = 22050
+    output_sample_rate: int = 24000
+
+
+@dataclass
+class XTTSConfig(BaseConfig):
+    num_loader_workers: int = 0
+    num_eval_loader_workers: int = 0
+    use_noise_augment: bool = False
+    use_phonemes: bool = False
+    phonemizer: str = None
+    phoneme_language: str = None
+    compute_input_seq_cache: bool = False
+    text_cleaner: str = None
+    enable_eos_bos_chars: bool = False
+    test_sentences_file: str = ""
+    phoneme_cache_path: str = None
+    # vocabulary parameters
+    add_blank: bool = False
+    # training params
+    batch_group_size: int = 0
+    loss_masking: bool = None
+    # dataloading
+    min_audio_len: int = 1
+    max_audio_len: int = float("inf")
+    min_text_len: int = 1
+    max_text_len: int = float("inf")
+    compute_f0: bool = False
+    compute_energy: bool = False
+    compute_linear_spec: bool = False
+    precompute_num_workers: int = 0
+    use_noise_augment: bool = False
+    start_by_longest: bool = False
+    shuffle: bool = False
+    drop_last: bool = False
+    # dataset
+    # optimizer
+    # evaluation
+    eval_split_max_size: int = None
+    eval_split_size: float = 0.01
+    # weighted samplers
+    use_speaker_weighted_sampler: bool = False
+    speaker_weighted_sampler_alpha: float = 1.0
+    use_language_weighted_sampler: bool = False
+    language_weighted_sampler_alpha: float = 1.0
+    use_length_weighted_sampler: bool = False
+    length_weighted_sampler_alpha: float = 1.0
+    model: str = "xtts"
+    model_args = field(default_factory=XttsArgs)
+    audio = field(default_factory=XttsAudioConfig)
+    model_dir = None
+    languages: list[str] = field(default_factory=lambda: [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "pl",
+        "tr",
+        "ru",
+        "nl",
+        "cs",
+        "ar",
+        "zh-cn",
+        "hu",
+        "ko",
+        "ja",
+        "hi",
+    ])
+
+    # inference params
+    temperature: float = 0.85
+    length_penalty: float = 1.0
+    repetition_penalty: float = 2.0
+    top_k: int = 50
+    top_p: float = 0.85
+    num_gpt_outputs: int = 1
+
+    # cloning
+    gpt_cond_len: int = 12
+    gpt_cond_chunk_len: int = 4
+    max_ref_len: int = 10
+    sound_norm_refs: bool = False
