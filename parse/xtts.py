@@ -1675,24 +1675,16 @@ class GPT(nn.Module):
         self.text_head = nn.Linear(model_dim, self.number_text_tokens)
         self.mel_head = nn.Linear(model_dim, self.num_audio_tokens)
 
-        if self.use_perceiver_resampler:
-            # XTTS v2
-            self.conditioning_perceiver = PerceiverResampler(
-                dim=model_dim,
-                depth=2,
-                dim_context=model_dim,
-                num_latents=32,
-                dim_head=64,
-                heads=8,
-                ff_mult=4,
-                use_flash_attn=False,
-            )
-        else:
-            # XTTS v1
-            self.prompt_embedding = nn.Embedding(self.num_audio_tokens,
-                                                 model_dim)
-            self.prompt_pos_embedding = LearnedPositionEmbeddings(
-                24 * 9, model_dim)
+        self.conditioning_perceiver = PerceiverResampler(
+            dim=model_dim,
+            depth=2,
+            dim_context=model_dim,
+            num_latents=32,
+            dim_head=64,
+            heads=8,
+            ff_mult=4,
+            use_flash_attn=False,
+        )
 
     def get_grad_norm_parameter_groups(self):
         return {
@@ -2243,10 +2235,11 @@ class BaseTTS(nn.Module):
         """
         # don't use isintance not to import recursively
         if "Config" in config.__class__.__name__:
-            config_num_chars = (self.config.model_args.num_chars if hasattr(
+            config_num_chars = (self.config.model_args["num_chars"] if hasattr(
                 self.config, "model_args") else self.config.num_chars)
             num_chars = config_num_chars if self.tokenizer is None else self.tokenizer.characters.num_chars
-            if "characters" in config:
+            if hasattr(config, "characters"):
+                # if "characters" in config:
                 self.config.num_chars = num_chars
                 if hasattr(self.config, "model_args"):
                     config.model_args.num_chars = num_chars
@@ -2818,7 +2811,7 @@ class Xtts(BaseTTS):
         super().__init__(config, ap=None, tokenizer=None)
         self.mel_stats_path = None
         self.config = config
-        self.gpt_batch_size = self.args.gpt_batch_size  # 1
+        self.gpt_batch_size = self.args["gpt_batch_size"]  # 1
 
         # self.tokenizer = VoiceBpeTokenizer()
         # self.gpt = None
@@ -2828,40 +2821,43 @@ class Xtts(BaseTTS):
     def init_models(self):
         """Initialize the models. We do it here since we need to load the tokenizer first."""
         if self.tokenizer.tokenizer is not None:
-            self.args.gpt_number_text_tokens = self.tokenizer.get_number_tokens(
-            )
-            self.args.gpt_start_text_token = self.tokenizer.tokenizer.token_to_id(
-                "[START]")
-            self.args.gpt_stop_text_token = self.tokenizer.tokenizer.token_to_id(
-                "[STOP]")
+            self.args[
+                "gpt_number_text_tokens"] = self.tokenizer.get_number_tokens()
+            self.args[
+                "gpt_start_text_token"] = self.tokenizer.tokenizer.token_to_id(
+                    "[START]")
+            self.args[
+                "gpt_stop_text_token"] = self.tokenizer.tokenizer.token_to_id(
+                    "[STOP]")
 
-        if self.args.gpt_number_text_tokens:
+        if self.args["gpt_number_text_tokens"]:
             self.gpt = GPT(
-                layers=self.args.gpt_layers,
-                model_dim=self.args.gpt_n_model_channels,
-                start_text_token=self.args.gpt_start_text_token,
-                stop_text_token=self.args.gpt_stop_text_token,
-                heads=self.args.gpt_n_heads,
-                max_text_tokens=self.args.gpt_max_text_tokens,
-                max_mel_tokens=self.args.gpt_max_audio_tokens,
-                max_prompt_tokens=self.args.gpt_max_prompt_tokens,
-                number_text_tokens=self.args.gpt_number_text_tokens,
-                num_audio_tokens=self.args.gpt_num_audio_tokens,
-                start_audio_token=self.args.gpt_start_audio_token,
-                stop_audio_token=self.args.gpt_stop_audio_token,
-                use_perceiver_resampler=self.args.gpt_use_perceiver_resampler,
-                code_stride_len=self.args.gpt_code_stride_len,
+                layers=self.args["gpt_layers"],
+                model_dim=self.args["gpt_n_model_channels"],
+                start_text_token=self.args["gpt_start_text_token"],
+                stop_text_token=self.args["gpt_stop_text_token"],
+                heads=self.args["gpt_n_heads"],
+                max_text_tokens=self.args["gpt_max_text_tokens"],
+                max_mel_tokens=self.args["gpt_max_audio_tokens"],
+                max_prompt_tokens=self.args["gpt_max_prompt_tokens"],
+                number_text_tokens=self.args["gpt_number_text_tokens"],
+                num_audio_tokens=self.args["gpt_num_audio_tokens"],
+                start_audio_token=self.args["gpt_start_audio_token"],
+                stop_audio_token=self.args["gpt_stop_audio_token"],
+                use_perceiver_resampler=self.
+                args["gpt_use_perceiver_resampler"],
+                code_stride_len=self.args["gpt_code_stride_len"],
             )
 
         self.hifigan_decoder = HifiDecoder(
-            input_sample_rate=self.args.input_sample_rate,
-            output_sample_rate=self.args.output_sample_rate,
-            output_hop_length=self.args.output_hop_length,
-            ar_mel_length_compression=self.args.gpt_code_stride_len,
-            decoder_input_dim=self.args.decoder_input_dim,
-            d_vector_dim=self.args.d_vector_dim,
-            cond_d_vector_in_each_upsampling_layer=self.args.
-            cond_d_vector_in_each_upsampling_layer,
+            input_sample_rate=self.args["input_sample_rate"],
+            output_sample_rate=self.args["output_sample_rate"],
+            output_hop_length=self.args["output_hop_length"],
+            ar_mel_length_compression=self.args["gpt_code_stride_len"],
+            decoder_input_dim=self.args["decoder_input_dim"],
+            d_vector_dim=self.args["d_vector_dim"],
+            cond_d_vector_in_each_upsampling_layer=self.
+            args["cond_d_vector_in_each_upsampling_layer"],
         )
 
     @property
@@ -3353,24 +3349,7 @@ class Xtts(BaseTTS):
     def get_compatible_checkpoint_state_dict(self, model_path):
 
         with open(model_path, "rb") as f:
-            checkpoint = torch.load(f,
-                                    map_location=torch.device("cpu"))["model"]
-
-        ignore_keys = [
-            "torch_mel_spectrogram_style_encoder",
-            "torch_mel_spectrogram_dvae", "dvae"
-        ]
-        for key in list(checkpoint.keys()):
-            # check if it is from the coqui Trainer if so convert it
-            if key.startswith("xtts."):
-                new_key = key.replace("xtts.", "")
-                checkpoint[new_key] = checkpoint[key]
-                del checkpoint[key]
-                key = new_key
-
-            # remove unused keys
-            if key.split(".")[0] in ignore_keys:
-                del checkpoint[key]
+            checkpoint = torch.load(f, map_location=torch.device("cpu"))
 
         return checkpoint
 
@@ -3407,14 +3386,13 @@ class Xtts(BaseTTS):
 
         checkpoint = self.get_compatible_checkpoint_state_dict(model_path)
 
-        self.load_state_dict(checkpoint, strict=strict)
+        self.load_state_dict(checkpoint, strict=False) # show unexpected keys
 
-        if eval:
-            self.hifigan_decoder.eval()
-            self.gpt.init_gpt_for_inference(
-                kv_cache=self.args.kv_cache,  # kv_cacke = True
-                use_deepspeed=use_deepspeed)
-            self.gpt.eval()
+        self.hifigan_decoder.eval()
+        self.gpt.init_gpt_for_inference(
+            kv_cache=self.args["kv_cache"],  # kv_cacke = True
+            use_deepspeed=use_deepspeed)
+        self.gpt.eval()
 
 
 @dataclass
@@ -3434,13 +3412,13 @@ class BaseConfig:
                 raise ValueError(f' [!] Missing required field "{field.name}"')
             #TODO handle default value
             # value = data.get(field.name, _default_value(field))
-            value = data.get(field.name, None)
+            value = data.get(_field.name, None)
             if value is None:
-                init_kwargs[field.name] = value
+                init_kwargs[_field.name] = value
                 continue
             #TODO handle _deserialize
             # value = _deserialize(value, _field.type)
-            init_kwargs[field.name] = value
+            init_kwargs[_field.name] = value
         for k, v in init_kwargs.items():
             setattr(self, k, v)
         return self
@@ -3571,9 +3549,9 @@ class XTTSConfig(BaseConfig):
     use_length_weighted_sampler: bool = False
     length_weighted_sampler_alpha: float = 1.0
     model: str = "xtts"
-    model_args = field(default_factory=XttsArgs)
-    audio = field(default_factory=XttsAudioConfig)
-    model_dir = None
+    model_args: XttsArgs = field(default_factory=XttsArgs)
+    audio: XttsAudioConfig = field(default_factory=XttsAudioConfig)
+    model_dir: str = None
     languages: list[str] = field(default_factory=lambda: [
         "en",
         "es",

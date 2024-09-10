@@ -4,12 +4,15 @@ import time
 import json
 import importlib
 
-from TTS.tts.models.xtts import Xtts
 import scipy
 import numpy as np
 
 import torch
 import torch.nn as nn
+
+import pysbd
+
+from xtts import Xtts, XTTSConfig
 
 
 def save_wav(*,
@@ -87,13 +90,12 @@ def setup_model(config, samples=None):
 
 def load_config(config_path: str):
 
-    from TTS.tts.configs.xtts_config import XttsConfig
     config_dict = {}
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     config_dict.update(data)
     # model_name = config_dict["model"]
-    config = XttsConfig()
+    config = XTTSConfig()
     config.from_dict(config_dict)
     return config
 
@@ -126,11 +128,23 @@ class Synthesizer(nn.Module):
             self._load_tts(tts_checkpoint, tts_config_path, use_cuda)
             self.output_sample_rate = self.tts_config.audio["sample_rate"]
 
+    @staticmethod
+    def _get_segmenter(lang: str):
+        """get the sentence segmenter for the given language.
+
+        Args:
+            lang (str): target language code.
+
+        Returns:
+            [type]: [description]
+        """
+        return pysbd.Segmenter(language=lang, clean=True)
+
     def _load_tts(self, tts_checkpoint_dir: str, tts_config_path: str,
                   use_cuda: bool) -> None:
 
         self.tts_config = load_config(tts_config_path)
-        self.tts_model = XTTs(self.tts_config)
+        self.tts_model = Xtts(self.tts_config)
         self.tts_model.load_checkpoint(tts_checkpoint_dir, eval=True)
         if use_cuda:
             self.tts_model.cuda()
@@ -399,21 +413,17 @@ class TTS(nn.Module):
 
 if __name__ == "__main__":
 
-    #     import torch
-    #     from TTS.api import TTS
     #
-    #     tts = TTS(model_path=".", config_path="./config.json", progress_bar=True)
-    # # tts.to(torch.device("cuda"))
-    #
-    # # Read text from file
-    #     with open("./book.txt", "r", encoding="utf-8") as f:
-    #         text = f.read()
-    #
-    # # Download model.pth, config.json, vocab.json from huggingface model hub
-    #
-    #     tts.tts_to_file(text=text,
-    #                     file_path="./caravan2.wav",
-    #                     speaker_wav="./shelly.wav",
-    #                     enable_text_splitting=True,
-    #                     language="en")
-    pass
+    tts = TTS(model_path="models", config_path="models/config.json", gpu=False)
+    # tts.to(torch.device("cuda"))
+    # Read text from file
+    # with open("./book.txt", "r", encoding="utf-8") as f:
+    #     text = f.read()
+
+    # Download model.pth, config.json, vocab.json from huggingface model hub
+
+    tts.tts_to_file(text="hello world",
+                    file_path="./caravan2.wav",
+                    speaker_wav="~/Download/mp3/output.wav",
+                    enable_text_splitting=True,
+                    language="en")
