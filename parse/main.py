@@ -149,6 +149,17 @@ class Synthesizer(nn.Module):
         if use_cuda:
             self.tts_model.cuda()
 
+    def split_into_sentences(self, text) -> list[str]:
+        """Split give text into sentences.
+
+        Args:
+            text (str): input text in string format.
+
+        Returns:
+            List[str]: list of sentences.
+        """
+        return self.seg.segment(text)
+
     def tts(
         self,
         text: str = "",
@@ -199,7 +210,7 @@ class Synthesizer(nn.Module):
         # compute a new d_vector from the given clip.
 
         vocoder_device = "cpu"
-        use_gl = self.vocoder_model is None
+        use_gl = True
         if not use_gl:
             vocoder_device = next(self.vocoder_model.parameters()).device
         if self.use_cuda:
@@ -424,6 +435,6 @@ if __name__ == "__main__":
 
     tts.tts_to_file(text="hello world",
                     file_path="./caravan2.wav",
-                    speaker_wav="~/Download/mp3/output.wav",
+                    speaker_wav="/Users/bruce/Download/mp3/output.wav",
                     enable_text_splitting=True,
                     language="en")
